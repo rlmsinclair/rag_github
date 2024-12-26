@@ -28,6 +28,7 @@ def add_repository():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
 @app.route('/search_files', methods=['POST'])
 def search_files():
     query = request.json.get('query')
@@ -37,8 +38,29 @@ def search_files():
     try:
         logger.info(f"Starting search request with query: {query}")
         results = rag.search_files(query)
-        logger.info(f"Search completed successfully, found {len(results)} results")
-        return jsonify(results)
+
+        # Filter and format the response
+        formatted_results = []
+        for result in results:
+            if result['type'] == 'repository':
+                formatted_results.append({
+                    'id': result['id'],
+                    'type': 'repository',
+                    'name': result['repo_name'],
+                    'similarity': result['similarity']
+                })
+            elif result['type'] == 'file':
+                formatted_results.append({
+                    'id': result['id'],
+                    'type': 'file',
+                    'repo_id': result['repo_id'],
+                    'name': result['file_path'],
+                    'content': result['content'],
+                    'similarity': result['similarity']
+                })
+
+        logger.info(f"Search completed successfully, found {len(formatted_results)} results")
+        return jsonify(formatted_results)
     except Exception as e:
         logger.error(f"Error in search_files endpoint: {str(e)}")
         logger.exception("Full traceback:")

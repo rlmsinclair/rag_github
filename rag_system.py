@@ -51,10 +51,29 @@ class RAGSystem:
                 ]
             )
 
-            description = message.content[0].text
-            formatted_description = self.extract_json(description)
-            # Parse the JSON response
-            return json.loads(formatted_description)
+            try:
+                # Extract JSON from the response
+                description = message.content[0].text
+                formatted_description = json.loads(self.extract_json(description))
+
+                # Ensure all required fields are present
+                required_fields = ['file_name', 'primary_language', 'description', 'key_components', 'dependencies']
+                for field in required_fields:
+                    if field not in formatted_description:
+                        formatted_description[field] = ''
+
+                return formatted_description
+
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"Failed to parse Claude response for {file_path}: {e}")
+                # Return a default structure if parsing fails
+                return {
+                    'file_name': os.path.basename(file_path),
+                    'primary_language': '',
+                    'description': 'Description unavailable',
+                    'key_components': [],
+                    'dependencies': []
+                }
 
         except Exception as e:
             logger.error(f"Error getting description for {file_path}: {str(e)}")
