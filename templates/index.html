@@ -127,7 +127,6 @@
             <div id="response" class="mt-4 p-4 bg-gray-50 rounded min-h-[200px] whitespace-pre-wrap"></div>
         </div>
     </div>
-
     <script>
         let selectedFiles = new Set();
         let fileContents = new Map();
@@ -153,35 +152,33 @@
             return languageMap[ext] || 'plaintext';
         }
 
-        function toggleFolder(repoId, folderPath) {
-            const folderContent = document.querySelector(`#folder-${repoId}-${folderPath.replace(/\//g, '-')}`);
-            if (folderContent) {
-                folderContent.classList.toggle('hidden');
-                const icon = document.querySelector(`#folder-icon-${repoId}-${folderPath.replace(/\//g, '-')}`);
-                if (icon) {
-                    icon.textContent = folderContent.classList.contains('hidden') ? '📁' : '📂';
-                }
+        function toggleFolder(folderId) {
+            const folderContent = document.getElementById(folderId);
+            const folderIcon = folderContent.previousElementSibling.querySelector('.folder-icon');
+
+            if (folderContent.classList.contains('hidden')) {
+                folderContent.classList.remove('hidden');
+                folderIcon.textContent = '📂';
+            } else {
+                folderContent.classList.add('hidden');
+                folderIcon.textContent = '📁';
             }
         }
 
         function selectAllInFolder(repoId, folderPath, event) {
             event.stopPropagation();
+
             const files = Array.from(fileContents.values())
                 .filter(file =>
                     file.repo_id === repoId &&
-                    file.file_path.startsWith(folderPath)
+                    file.file_path.startsWith(folderPath + '/')
                 );
 
-            const allSelected = files.every(file => selectedFiles.has(file.id));
-
             files.forEach(file => {
-                const element = document.querySelector(`#file-${file.id}`);
-                if (allSelected) {
-                    selectedFiles.delete(file.id);
-                    element?.classList.remove('bg-blue-100');
-                } else {
-                    selectedFiles.add(file.id);
-                    element?.classList.add('bg-blue-100');
+                selectedFiles.add(file.id);
+                const checkbox = document.getElementById(`checkbox-${file.id}`);
+                if (checkbox) {
+                    checkbox.innerHTML = '✓';
                 }
             });
 
@@ -189,37 +186,153 @@
             updatePromptState();
         }
 
-        function showRepositoryPreview(repo) {
+        function showRepositoryFiles(repo, files) {
+            console.log('Showing repository:', repo);
+            console.log('Repository files:', files);
+
             const preview = document.getElementById('preview');
-            preview.innerHTML = `
-                <div class="mb-4">
-                    <h4 class="text-lg font-medium">${repo.repo_name}</h4>
-                    <div class="mt-2">
-                        <p class="font-medium">Overview:</p>
-                        <p class="text-gray-600">${repo.overview}</p>
+            const relevancePercent = (repo.similarity * 100).toFixed(1);
+
+            if (!files || files.length === 0) {
+                preview.innerHTML = `
+                    <div class="mb-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h4 class="text-lg font-medium">📦 ${repo.repo_name}</h4>
+                            <div class="text-sm text-gray-500">
+                                Relevance: ${relevancePercent}%
+                            </div>
+                        </div>
+                        <div class="text-gray-500 italic">No files found in this repository</div>
                     </div>
-                    <div class="mt-2">
-                        <p class="font-medium">Main Technologies:</p>
-                        <p class="text-gray-600">${repo.main_technologies.join(', ')}</p>
+                `;
+                return;
+            }
+
+            // Group files by folder
+            const filesByFolder = {};
+            files.forEach(file => {
+                const pathParts = file.file_path.split('/');
+                if (pathParts.length > 1) {
+                    const folderPath = pathParts.slice(0, -1).join('/');
+                    if (!filesByFolder[folderPath]) {
+                        filesByFolder[folderPath] = [];
+                    }
+                    filesByFolder[folderPath].push(file);
+                } else {
+                    if (!filesByFolder['root']) filesByFolder['root'] = [];
+                    filesByFolder['root'].push(file);
+                }
+            });
+
+            let html = `
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="text-lg font-medium">📦 ${repo.repo_name}</h4>
+                        <div class="text-sm text-gray-500">
+                            Relevance: ${relevancePercent}%
+                        </div>
                     </div>
-                    <div class="mt-2">
-                        <p class="font-medium">Key Features:</p>
-                        <ul class="list-disc pl-5 text-gray-600">
-                            ${repo.key_features.map(f => `<li>${f}</li>`).join('')}
-                        </ul>
+                    <div class="w-full bg-gray-200 rounded-full h-1.5 mb-4">
+                        <div class="bg-blue-600 h-1.5 rounded-full" style="width: ${relevancePercent}%"></div>
                     </div>
-                    <div class="mt-2">
-                        <p class="font-medium">Architecture:</p>
-                        <p class="text-gray-600">${repo.architecture}</p>
+                    <div class="mb-4">
+                        <p class="text-gray-600">${repo.overview || repo.description || 'No description available'}</p>
+                        ${repo.main_technologies?.length ? `
+                            <div class="mt-2">
+                                <span class="text-sm font-medium">Technologies: </span>
+                                <span class="text-sm text-gray-600">${repo.main_technologies.join(', ')}</span>
+                            </div>
+                        ` : ''}
                     </div>
-                    <div class="mt-2">
-                        <p class="font-medium">Dependencies:</p>
-                        <p class="text-gray-600">${repo.dependencies.join(', ')}</p>
+                    <div class="flex items-center gap-4 mb-4">
+                        <button onclick="selectAllRepositoryFiles(${repo.id})"
+                                class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
+                            Select All Files
+                        </button>
+                        <button onclick="deselectAllRepositoryFiles(${repo.id})"
+                                class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">
+                            Deselect All
+                        </button>
+                    </div>
+                    <div class="border rounded-lg">
+            `;
+
+            // Add folders and their files
+            Object.entries(filesByFolder).forEach(([folderPath, folderFiles]) => {
+                if (folderPath === 'root') {
+                    // Root files
+                    folderFiles.forEach(file => {
+                        const fileRelevancePercent = (file.similarity * 100).toFixed(1);
+                        html += `
+                            <div class="border-b last:border-b-0">
+                                <div class="p-3 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
+                                     onclick="toggleFileSelection(${file.id}, this)">
+                                    <div class="w-6 h-6 border-2 border-green-500 rounded flex items-center justify-center file-checkbox"
+                                         id="checkbox-${file.id}">
+                                        ${selectedFiles.has(file.id) ? '✓' : ''}
+                                    </div>
+                                    <span class="mr-2">📄</span>
+                                    <div class="flex-grow">
+                                        <div class="text-sm font-medium">${file.file_path}</div>
+                                        <div class="text-xs text-gray-500">Relevance: ${fileRelevancePercent}%</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                } else {
+                    // Folder with files
+                    const folderId = `folder-${repo.id}-${folderPath.replace(/\//g, '-')}`;
+                    html += `
+                        <div class="border-b last:border-b-0">
+                            <div class="p-3 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
+                                 onclick="toggleFolder('${folderId}')">
+                                <span class="folder-icon">📁</span>
+                                <div class="flex-grow">
+                                    <div class="text-sm font-medium">${folderPath}</div>
+                                </div>
+                                <button onclick="selectAllInFolder(${repo.id}, '${folderPath}', event)"
+                                        class="text-xs text-green-600 hover:text-green-800 px-2 py-1 rounded border border-green-600 hover:bg-green-50">
+                                    Select All
+                                </button>
+                            </div>
+                            <div id="${folderId}" class="hidden pl-8 border-t bg-gray-50">
+                    `;
+
+                    folderFiles.forEach(file => {
+                        const fileRelevancePercent = (file.similarity * 100).toFixed(1);
+                        html += `
+                            <div class="border-b last:border-b-0">
+                                <div class="p-3 hover:bg-gray-100 cursor-pointer flex items-center gap-3"
+                                     onclick="toggleFileSelection(${file.id}, this)">
+                                    <div class="w-6 h-6 border-2 border-green-500 rounded flex items-center justify-center file-checkbox"
+                                         id="checkbox-${file.id}">
+                                        ${selectedFiles.has(file.id) ? '✓' : ''}
+                                    </div>
+                                    <span class="mr-2">📄</span>
+                                    <div class="flex-grow">
+                                        <div class="text-sm font-medium">${file.file_path.split('/').pop()}</div>
+                                        <div class="text-xs text-gray-500">Relevance: ${fileRelevancePercent}%</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    html += `
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+
+            html += `
                     </div>
                 </div>
             `;
-        }
 
+            preview.innerHTML = html;
+        }
         function updateFilePreview(fileId) {
             const fileData = fileContents.get(fileId);
             const preview = document.getElementById('preview');
@@ -278,17 +391,43 @@
         }
 
         function toggleFileSelection(fileId, element) {
+            const checkbox = document.getElementById(`checkbox-${fileId}`);
             if (selectedFiles.has(fileId)) {
                 selectedFiles.delete(fileId);
-                element.classList.remove('bg-blue-100');
+                checkbox.innerHTML = '';
             } else {
                 selectedFiles.add(fileId);
-                element.classList.add('bg-blue-100');
+                checkbox.innerHTML = '✓';
             }
 
             updateSelectedFilesCount();
             updatePromptState();
-            updateFilePreview(fileId);
+        }
+
+        function selectAllRepositoryFiles(repoId) {
+            const files = Array.from(fileContents.values()).filter(f => f.repo_id === repoId);
+            files.forEach(file => {
+                selectedFiles.add(file.id);
+                const checkbox = document.getElementById(`checkbox-${file.id}`);
+                if (checkbox) {
+                    checkbox.innerHTML = '✓';
+                }
+            });
+            updateSelectedFilesCount();
+            updatePromptState();
+        }
+
+        function deselectAllRepositoryFiles(repoId) {
+            const files = Array.from(fileContents.values()).filter(f => f.repo_id === repoId);
+            files.forEach(file => {
+                selectedFiles.delete(file.id);
+                const checkbox = document.getElementById(`checkbox-${file.id}`);
+                if (checkbox) {
+                    checkbox.innerHTML = '';
+                }
+            });
+            updateSelectedFilesCount();
+            updatePromptState();
         }
 
         function handleRepoKeyDown(event) {
@@ -308,7 +447,6 @@
         function handlePromptKeyDown(event) {
             if (event.key === 'Enter') {
                 if (event.shiftKey) {
-                    // Let the default behavior happen (new line)
                     return;
                 } else {
                     event.preventDefault();
@@ -331,10 +469,9 @@
             resultsDiv.innerHTML = 'Searching...';
             selectedFiles.clear();
             fileContents.clear();
-            currentRepository = null;
             updateSelectedFilesCount();
             updatePromptState();
-            updateFilePreview(null);
+            document.getElementById('preview').innerHTML = '<div class="text-gray-500 italic">Select a repository to view files</div>';
 
             try {
                 const response = await fetch('/search_files', {
@@ -346,124 +483,67 @@
                 });
 
                 const results = await response.json();
+                console.log('Search results:', results);
 
                 if (response.ok) {
-                    // Group results by repository
-                    const repositories = results.filter(r => r.type === 'repository');
+                    // Store all files in fileContents
                     const files = results.filter(r => r.type === 'file');
+                    console.log('Files found:', files.length);
 
-                    // Store file contents
                     files.forEach(file => {
-                        fileContents.set(file.id, file);
+                        if (file && file.id) {
+                            fileContents.set(file.id, file);
+                        }
                     });
 
-                    // Generate HTML
-                    let html = '';
+                    // Show only repositories in the results list
+                    const repositories = results.filter(r => r.type === 'repository')
+                        .sort((a, b) => b.similarity - a.similarity);
+                    console.log('Repositories found:', repositories.length);
 
-                    // Repositories section
-                    if (repositories.length > 0) {
-                        html += '<div class="mb-6"><h4 class="text-md font-medium mb-2">Repositories</h4>';
-                        repositories.forEach(repo => {
-                            html += `
-                                <div class="p-3 border rounded cursor-pointer hover:bg-gray-50 transition-colors mb-2"
-                                     onclick="showRepositoryPreview(${JSON.stringify(repo).replace(/"/g, '&quot;')})">
+                    let html = '<div class="space-y-2">';
+
+                    repositories.forEach(repo => {
+                        const relevancePercent = (repo.similarity * 100).toFixed(1);
+                        const repoFiles = files.filter(f => f.repo_id === repo.id);
+                        console.log(`Files for repo ${repo.repo_name}:`, repoFiles.length);
+
+                        html += `
+                            <div class="p-3 border rounded cursor-pointer hover:bg-gray-50 transition-colors"
+                                 onclick="showRepositoryFiles(${JSON.stringify({
+                                     id: repo.id,
+                                     repo_name: repo.repo_name,
+                                     similarity: repo.similarity,
+                                     overview: repo.overview,
+                                     description: repo.description,
+                                     main_technologies: repo.main_technologies
+                                 })}, ${JSON.stringify(repoFiles)})">
+                                <div class="flex items-center justify-between">
                                     <div class="font-medium">📦 ${repo.repo_name}</div>
-                                    <div class="text-sm text-gray-600 mt-1">${repo.overview}</div>
+                                    <div class="text-sm text-gray-500">
+                                        Relevance: ${relevancePercent}%
+                                    </div>
                                 </div>
-                            `;
-                        });
-                        html += '</div>';
-                    }
+                                <div class="text-sm text-gray-600 mt-1">
+                                    ${repo.overview || repo.description || 'No description available'}
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    ${repoFiles.length} files found
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                    <div class="bg-blue-600 h-1.5 rounded-full" style="width: ${relevancePercent}%"></div>
+                                </div>
+                            </div>
+                        `;
+                    });
 
-                    // Files section
-                    if (files.length > 0) {
-                        html += '<div><h4 class="text-md font-medium mb-2">Files</h4>';
-
-                        // Group files by repository and folder structure
-                        const filesByRepo = {};
-                        files.forEach(file => {
-                            if (!filesByRepo[file.repo_id]) {
-                                filesByRepo[file.repo_id] = {
-                                    repo_name: file.repo_name,
-                                    folders: {},
-                                    files: []
-                                };
-                            }
-
-                            // Add to appropriate folder
-                            const pathParts = file.file_path.split('/');
-                            if (pathParts.length > 1) {
-                                const folderPath = pathParts.slice(0, -1).join('/');
-                                if (!filesByRepo[file.repo_id].folders[folderPath]) {
-                                    filesByRepo[file.repo_id].folders[folderPath] = [];
-                                }
-                                filesByRepo[file.repo_id].folders[folderPath].push(file);
-                            } else {
-                                filesByRepo[file.repo_id].files.push(file);
-                            }
-                        });
-
-                        // Generate HTML for each repository's files
-                        Object.entries(filesByRepo).forEach(([repoId, repo]) => {
-                            html += `
-                                <div class="mb-4 border-t pt-2">
-                                    <div class="font-medium mb-2">📦 ${repo.repo_name}</div>
-                            `;
-
-                            // Folders
-                            Object.entries(repo.folders).forEach(([folderPath, folderFiles]) => {
-                                const folderId = `folder-${repoId}-${folderPath.replace(/\//g, '-')}`;
-                                const iconId = `folder-icon-${repoId}-${folderPath.replace(/\//g, '-')}`;
-                                html += `
-                                    <div class="ml-4 mb-2">
-                                        <div class="folder-toggle flex items-center gap-2 p-1 rounded"
-                                             onclick="toggleFolder(${repoId}, '${folderPath}')">
-                                            <span id="${iconId}" class="mr-1">📁</span>
-                                            <span class="text-sm text-gray-600 hover:text-gray-900">
-                                                ${folderPath}
-                                            </span>
-                                            <button onclick="selectAllInFolder(${repoId}, '${folderPath}', event)"
-                                                    class="ml-2 text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded border border-blue-600 hover:bg-blue-50">
-                                                Select All
-                                            </button>
-                                        </div>
-                                        <div id="${folderId}" class="folder-content hidden">
-                                            ${folderFiles.map(file => `
-                                                <div id="file-${file.id}"
-                                                     class="p-2 rounded cursor-pointer hover:bg-gray-50 transition-colors flex items-center"
-                                                     onclick="toggleFileSelection(${file.id}, this)">
-                                                    <span class="mr-2">📄</span>
-                                                    <div class="text-sm">${file.file_path.split('/').pop()}</div>
-                                                </div>
-                                            `).join('')}
-                                        </div>
-                                    </div>
-                                `;
-                            });
-
-                            // Root files
-                            repo.files.forEach(file => {
-                                html += `
-                                    <div id="file-${file.id}"
-                                         class="p-2 ml-4 rounded cursor-pointer hover:bg-gray-50 transition-colors flex items-center"
-                                         onclick="toggleFileSelection(${file.id}, this)">
-                                        <span class="mr-2">📄</span>
-                                        <div class="text-sm">${file.file_path}</div>
-                                    </div>
-                                `;
-                            });
-
-                            html += '</div>';
-                        });
-
-                        html += '</div>';
-                    }
-
-                    resultsDiv.innerHTML = html || '<div class="text-gray-500">No results found</div>';
+                    html += '</div>';
+                    resultsDiv.innerHTML = html || '<div class="text-gray-500">No repositories found</div>';
                 } else {
                     throw new Error(results.error);
                 }
             } catch (error) {
+                console.error('Search error:', error);
                 resultsDiv.innerHTML = `Error: ${error.message}`;
             } finally {
                 searchButton.disabled = false;

@@ -52,8 +52,9 @@ class RAGSystem:
             )
 
             description = message.content[0].text
+            formatted_description = self.extract_json(description)
             # Parse the JSON response
-            return json.loads(description)
+            return json.loads(formatted_description)
 
         except Exception as e:
             logger.error(f"Error getting description for {file_path}: {str(e)}")
@@ -281,91 +282,181 @@ class RAGSystem:
 
     def search_files(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search for similar content using vector similarity."""
-        query_embedding = self.generate_embedding(query)
-        query_embedding_array = np.array(query_embedding)
+        logger.info(f"Starting search with query: {query}")
 
-        conn = mysql.connector.connect(**self.mysql_config)
-        cursor = conn.cursor()
+        try:
+            logger.info("Generating query embedding")
+            query_embedding = self.generate_embedding(query)
+            query_embedding_array = np.array(query_embedding)
+            logger.info("Query embedding generated successfully")
 
-        # First, get repository matches
-        cursor.execute('''
-            SELECT 
-                r.id, r.repo_name, r.description, r.overview, r.main_technologies, 
-                r.key_features, r.architecture, r.dependencies
-            FROM repositories r
-        ''')
+            conn = mysql.connector.connect(**self.mysql_config)
+            cursor = conn.cursor(dictionary=True)
+            logger.info("Database connection established")
 
-        repositories = []
-        for repo in cursor.fetchall():
-            repo_desc = f"{repo[2]} {repo[3]} {repo[4]} {repo[5]} {repo[6]} {repo[7]}"
-            repo_embedding = self.generate_embedding(repo_desc)
-            similarity = np.dot(query_embedding_array, np.array(repo_embedding)) / (
-                    np.linalg.norm(query_embedding_array) * np.linalg.norm(repo_embedding)
-            )
-            repositories.append({
-                'id': repo[0],
-                'repo_name': repo[1],
-                'description': repo[2],
-                'type': 'repository',
-                'similarity': similarity,
-                'overview': repo[3],
-                'main_technologies': json.loads(repo[4]) if repo[4] else [],
-                'key_features': json.loads(repo[5]) if repo[5] else [],
-                'architecture': repo[6],
-                'dependencies': json.loads(repo[7]) if repo[7] else []
-            })
+            try:
+                # Repository matches
+                logger.info("Fetching repositories")
+                cursor.execute('''
+                    SELECT 
+                        id, repo_name, description, overview, main_technologies, 
+                        key_features, architecture, dependencies
+                    FROM repositories
+                ''')
 
-        # Then, get file matches
-        cursor.execute('''
-            SELECT 
-                f.id, f.content, f.file_path, r.repo_name, r.id as repo_id,
-                e.embedding, f.description, f.key_components, f.dependencies
-            FROM embeddings e
-            JOIN files f ON e.file_id = f.id
-            JOIN repositories r ON f.repo_id = r.id
-        ''')
+                repo_rows = cursor.fetchall()
+                logger.info(f"Found {len(repo_rows)} repositories")
+                repositories = []
 
-        files = []
-        for row in cursor:
-            file_id, content, file_path, repo_name, repo_id, embedding_str, description, components, deps = row
-            embedding = np.array(json.loads(embedding_str))
-            similarity = np.dot(query_embedding_array, embedding) / (
-                    np.linalg.norm(query_embedding_array) * np.linalg.norm(embedding)
-            )
+                for repo in repo_rows:
+                    try:
+                        logger.debug(f"Processing repository: {repo.get('repo_name', 'unknown')}")
+                        logger.debug(f"Repository data: {json.dumps(repo, default=str)}")
 
-            # Create folder structure
-            path_parts = file_path.split('/')
-            folders = []
-            current_path = ""
-            for part in path_parts[:-1]:
-                current_path = f"{current_path}/{part}" if current_path else part
-                folders.append({
-                    'path': current_path,
-                    'name': part,
-                    'type': 'folder'
-                })
+                        # Build repository description for embedding
+                        repo_desc = f"{repo['description'] or ''} {repo['overview'] or ''}"
+                        if repo['main_technologies']:
+                            try:
+                                tech_list = json.loads(repo['main_technologies'])
+                                repo_desc += f" {' '.join(tech_list)}"
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse main_technologies for repo {repo['repo_name']}: {e}")
 
-            files.append({
-                'id': file_id,
-                'repo_id': repo_id,
-                'content': content,
-                'file_path': file_path,
-                'repo_name': repo_name,
-                'type': 'file',
-                'similarity': similarity,
-                'description': description,
-                'key_components': json.loads(components) if components else [],
-                'dependencies': json.loads(deps) if deps else [],
-                'folders': folders
-            })
+                        logger.debug(f"Generating embedding for repo: {repo['repo_name']}")
+                        repo_embedding = self.generate_embedding(repo_desc)
 
-        conn.close()
+                        # Calculate similarity
+                        similarity = np.dot(query_embedding_array, np.array(repo_embedding)) / (
+                                np.linalg.norm(query_embedding_array) * np.linalg.norm(repo_embedding)
+                        )
 
-        # Combine and sort results, putting repositories first
-        repositories.sort(key=lambda x: x['similarity'], reverse=True)
-        files.sort(key=lambda x: x['similarity'], reverse=True)
+                        # Prepare repository data
+                        repo_data = {
+                            'id': repo['id'],
+                            'repo_name': repo['repo_name'],
+                            'description': repo['description'],
+                            'type': 'repository',
+                            'similarity': float(similarity),  # Convert numpy float to Python float
+                            'overview': repo['overview'],
+                            'main_technologies': json.loads(repo['main_technologies']) if repo[
+                                'main_technologies'] else [],
+                            'key_features': json.loads(repo['key_features']) if repo['key_features'] else [],
+                            'architecture': repo['architecture'],
+                            'dependencies': json.loads(repo['dependencies']) if repo['dependencies'] else []
+                        }
 
-        return repositories[:top_k] + files[:top_k]
+                        logger.debug(f"Repository data prepared: {json.dumps(repo_data, default=str)}")
+                        repositories.append(repo_data)
+
+                    except Exception as e:
+                        logger.error(f"Error processing repository {repo.get('repo_name', 'unknown')}: {str(e)}")
+                        logger.exception("Full traceback:")
+                        continue
+
+                # File matches
+                logger.info("Fetching files")
+                cursor.execute('''
+                    SELECT 
+                        f.id, f.content, f.file_path, r.repo_name, r.id as repo_id,
+                        e.embedding, f.description, f.key_components, f.dependencies,
+                        f.primary_language
+                    FROM embeddings e
+                    JOIN files f ON e.file_id = f.id
+                    JOIN repositories r ON f.repo_id = r.id
+                ''')
+
+                file_rows = cursor.fetchall()
+                logger.info(f"Found {len(file_rows)} files")
+                files = []
+
+                for file in file_rows:
+                    try:
+                        logger.debug(f"Processing file: {file.get('file_path', 'unknown')}")
+                        logger.debug(
+                            f"File data: {json.dumps({k: v for k, v in file.items() if k != 'content'}, default=str)}")
+
+                        if not file['file_path']:
+                            logger.warning(f"Skipping file with ID {file['id']} - no file_path")
+                            continue
+
+                        # Parse embedding and calculate similarity
+                        embedding = np.array(json.loads(file['embedding']))
+                        similarity = np.dot(query_embedding_array, embedding) / (
+                                np.linalg.norm(query_embedding_array) * np.linalg.norm(embedding)
+                        )
+
+                        # Create folder structure
+                        path_parts = file['file_path'].split('/')
+                        folders = []
+                        current_path = ""
+                        for part in path_parts[:-1]:
+                            current_path = f"{current_path}/{part}" if current_path else part
+                            folders.append({
+                                'path': current_path,
+                                'name': part,
+                                'type': 'folder'
+                            })
+
+                        # Prepare file data
+                        file_data = {
+                            'id': file['id'],
+                            'repo_id': file['repo_id'],
+                            'content': file['content'],
+                            'file_path': file['file_path'],
+                            'repo_name': file['repo_name'],
+                            'type': 'file',
+                            'similarity': float(similarity),  # Convert numpy float to Python float
+                            'description': file['description'] or '',
+                            'key_components': json.loads(file['key_components']) if file['key_components'] else [],
+                            'dependencies': json.loads(file['dependencies']) if file['dependencies'] else [],
+                            'primary_language': file['primary_language'] or 'unknown',
+                            'folders': folders
+                        }
+
+                        logger.debug(
+                            f"File data prepared: {json.dumps({k: v for k, v in file_data.items() if k != 'content'}, default=str)}")
+                        files.append(file_data)
+
+                    except Exception as e:
+                        logger.error(f"Error processing file {file.get('file_path', 'unknown')}: {str(e)}")
+                        logger.exception("Full traceback:")
+                        continue
+
+                # Sort and combine results
+                logger.info(f"Sorting results - Repositories: {len(repositories)}, Files: {len(files)}")
+                repositories.sort(key=lambda x: x['similarity'], reverse=True)
+                files.sort(key=lambda x: x['similarity'], reverse=True)
+
+                final_results = repositories[:top_k] + files[:top_k]
+                logger.info(f"Returning {len(final_results)} total results")
+
+                # Log the structure of the first result for debugging
+                if final_results:
+                    logger.debug(
+                        f"Sample result structure: {json.dumps({k: v for k, v in final_results[0].items() if k != 'content'}, default=str)}")
+
+                return final_results
+
+            except Exception as e:
+                logger.error(f"Database error in search_files: {str(e)}")
+                logger.exception("Full traceback:")
+                raise
+            finally:
+                cursor.close()
+                conn.close()
+                logger.info("Database connection closed")
+
+        except Exception as e:
+            logger.error(f"Top-level error in search_files: {str(e)}")
+            logger.exception("Full traceback:")
+            raise
+
+        except Exception as e:
+            logger.error(f"Error in search_files: {str(e)}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
 
     def clone_repository(self, repo_url: str) -> None:
         """Download repository content using GitHub API and store in database."""

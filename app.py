@@ -2,7 +2,11 @@ import json
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from config import Config
 from rag_system import RAGSystem
+import logging
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 app = Flask(__name__)
 rag = RAGSystem(
     mysql_config=Config.MYSQL_CONFIG,
@@ -31,15 +35,13 @@ def search_files():
         return jsonify({'error': 'Search query is required'}), 400
 
     try:
+        logger.info(f"Starting search request with query: {query}")
         results = rag.search_files(query)
-        return jsonify([{
-            'id': r['id'],
-            'file_path': r['file_path'],
-            'repo_name': r['repo_name'],
-            'content': r['content'],  # Send full content for preview
-            'preview': r['content'][:200] + '...' if len(r['content']) > 200 else r['content']
-        } for r in results])
+        logger.info(f"Search completed successfully, found {len(results)} results")
+        return jsonify(results)
     except Exception as e:
+        logger.error(f"Error in search_files endpoint: {str(e)}")
+        logger.exception("Full traceback:")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/stream_prompt', methods=['POST'])
