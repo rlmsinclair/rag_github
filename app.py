@@ -22,6 +22,58 @@ rag = RAGSystem(
 def index():
     return render_template('index.html')
 
+@app.route('/get_file/<int:file_id>', methods=['GET'])
+def get_file(file_id):
+    try:
+        conn = mysql.connector.connect(**Config.MYSQL_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT 
+                f.id, f.file_path, f.content, f.description,
+                f.primary_language, f.key_components, f.dependencies,
+                r.repo_name, r.repo_url
+            FROM files f
+            JOIN repositories r ON f.repo_id = r.id
+            WHERE f.id = %s
+        """, (file_id,))
+
+        file = cursor.fetchone()
+        if not file:
+            return jsonify({'error': 'File not found'}), 404
+
+        # Parse JSON fields
+        try:
+            key_components = json.loads(file['key_components']) if file['key_components'] else []
+        except (json.JSONDecodeError, TypeError):
+            key_components = []
+
+        try:
+            dependencies = json.loads(file['dependencies']) if file['dependencies'] else []
+        except (json.JSONDecodeError, TypeError):
+            dependencies = []
+
+        file_data = {
+            'id': file['id'],
+            'file_path': file['file_path'],
+            'content': file['content'],
+            'description': file['description'],
+            'primary_language': file['primary_language'],
+            'key_components': key_components,
+            'dependencies': dependencies,
+            'repo_name': file['repo_name'],
+            'repo_url': file['repo_url']
+        }
+
+        return jsonify(file_data)
+
+    except Exception as e:
+        logger.error(f"Error getting file details: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.route('/add_repository', methods=['POST'])
 def add_repository():
     repo_url = request.json.get('repo_url')

@@ -3,11 +3,13 @@ const selectedFiles = new Set();
 
 // Utility functions
 function showLoading(id) {
-  document.getElementById(id).style.display = 'flex';
+  const element = document.getElementById(id);
+  element.classList.add('active');
 }
 
 function hideLoading(id) {
-  document.getElementById(id).style.display = 'none';
+  const element = document.getElementById(id);
+  element.classList.remove('active');
 }
 
 function showError(id, message, isSuccess = false) {
@@ -22,8 +24,11 @@ function hideError(id) {
 }
 
 function tryParseJSON(jsonString, defaultValue) {
+  if (!jsonString) return defaultValue;
+
   try {
-    return jsonString ? JSON.parse(jsonString) : defaultValue;
+    if (Array.isArray(jsonString)) return jsonString;
+    return JSON.parse(jsonString);
   } catch (e) {
     console.warn('Failed to parse JSON:', e);
     return defaultValue;
@@ -93,18 +98,57 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function tryParseJSON(jsonString, defaultValue) {
-  if (!jsonString) return defaultValue;
+// Main functions
+async function addRepository() {
+  const repoUrl = document.getElementById('repoUrl').value.trim();
+  if (!repoUrl) return;
+
+  hideError('repoError');
+  showLoading('repoLoading');
 
   try {
-    // Handle string that might be already an array
-    if (Array.isArray(jsonString)) return jsonString;
+    const response = await fetch('/add_repository', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: repoUrl })
+    });
 
-    // Try parsing the JSON string
-    return JSON.parse(jsonString);
-  } catch (e) {
-    console.warn('Failed to parse JSON:', e);
-    return defaultValue;
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Failed to add repository');
+
+    document.getElementById('repoUrl').value = '';
+    showError('repoError', 'Repository added successfully!', true);
+  } catch (error) {
+    showError('repoError', error.message);
+  } finally {
+    hideLoading('repoLoading');
+  }
+}
+
+async function searchFiles() {
+  const query = document.getElementById('searchQuery').value.trim();
+  if (!query) return;
+
+  hideError('searchError');
+  showLoading('searchLoading');
+
+  try {
+    const response = await fetch('/search_files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to search files');
+    }
+
+    const results = await response.json();
+    displaySearchResults(results);
+  } catch (error) {
+    showError('searchError', error.message);
+  } finally {
+    hideLoading('searchLoading');
   }
 }
 
@@ -121,7 +165,6 @@ function displaySearchResults(results) {
     const repoElement = document.createElement('div');
     repoElement.className = 'repository-item';
 
-    // Ensure arrays are properly handled
     const technologies = Array.isArray(repo.main_technologies) ? repo.main_technologies : [];
     const features = Array.isArray(repo.key_features) ? repo.key_features : [];
     const dependencies = Array.isArray(repo.dependencies) ? repo.dependencies : [];
@@ -216,6 +259,101 @@ function displaySearchResults(results) {
   });
 }
 
+async function showFileDetails(fileId, filePath) {
+  try {
+    // Toggle file selection immediately
+    toggleFileSelection(fileId, filePath);
+
+    const response = await fetch(`/get_file/${fileId}`);
+    if (!response.ok) throw new Error('Failed to fetch file details');
+
+    const file = await response.json();
+
+    // Find or create file details section
+    let fileDetails = document.querySelector('.file-details');
+    if (!fileDetails) {
+      fileDetails = document.createElement('div');
+      fileDetails.className = 'file-details';
+      document.querySelector('.repository-content').appendChild(fileDetails);
+    }
+
+    const language = getLanguageFromPath(file.file_path);
+
+    fileDetails.innerHTML = `
+      <div class="file-header">
+        <h3>
+          <svg class="file-icon" viewBox="0 0 16 16" width="16" height="16">
+            <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path>
+          </svg>
+          ${escapeHtml(file.file_path)}
+        </h3>
+      </div>
+
+      <div class="file-metadata">
+        <div class="metadata-item">
+          <h4>Repository</h4>
+          <p>${escapeHtml(file.repo_name)}</p>
+        </div>
+        
+        <div class="metadata-item">
+          <h4>Language</h4>
+          <p>${escapeHtml(file.primary_language || 'Unknown')}</p>
+        </div>
+
+        ${file.description ? `
+          <div class="metadata-item">
+            <h4>Description</h4>
+            <p>${escapeHtml(file.description)}</p>
+          </div>
+        ` : ''}
+      </div>
+
+      ${file.key_components.length > 0 ? `
+        <div class="metadata-item">
+          <h4>Key Components</h4>
+          <ul>
+            ${file.key_components.map(component => `
+              <li>${escapeHtml(component)}</li>
+            `).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      ${file.dependencies.length > 0 ? `
+        <div class="metadata-item">
+          <h4>Dependencies</h4>
+          <div class="tags">
+            ${file.dependencies.map(dep => `
+              <span class="tag dependency">${escapeHtml(dep)}</span>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="file-content-wrapper">
+        <div class="file-content-header">
+          <span class="language-label">
+            <span class="language-dot" style="background-color: ${getLanguageColor(file.primary_language)}"></span>
+            ${file.primary_language || getLanguageFromPath(file.file_path)}
+          </span>
+        </div>
+        <pre class="line-numbers"><code class="language-${language}">${escapeHtml(file.content)}</code></pre>
+      </div>
+    `;
+
+    fileDetails.classList.add('active');
+
+    if (typeof Prism !== 'undefined') {
+      Prism.highlightAll();
+    }
+
+  } catch (error) {
+    console.error('Error showing file details:', error);
+    showError('searchError', 'Failed to load file details');
+  }
+}
+
+// Update buildFileTree function
 function buildFileTree(nodes, repoId, path = '') {
   if (!nodes || nodes.length === 0) return '';
 
@@ -239,12 +377,13 @@ function buildFileTree(nodes, repoId, path = '') {
           `;
         } else {
           return `
-            <li class="tree-item file">
-              <div class="file-header ${selectedFiles.has(node.id.toString()) ? 'selected' : ''}"
-                   onclick="toggleFileSelection('${node.id}', '${nodePath}')">
+            <li class="tree-item file ${selectedFiles.has(node.id.toString()) ? 'selected' : ''}"
+                onclick="showFileDetails('${node.id}', '${nodePath}')">
+              <div class="file-header">
                 <span class="file-icon">📄</span>
                 <span class="file-name">${escapeHtml(node.name)}</span>
                 <span class="file-language">${escapeHtml(node.language || '')}</span>
+                <span class="selection-indicator">✓</span>
               </div>
             </li>
           `;
@@ -252,6 +391,35 @@ function buildFileTree(nodes, repoId, path = '') {
       }).join('')}
     </ul>
   `;
+}
+
+// Update toggleFileSelection function
+function toggleFileSelection(fileId, filePath) {
+  if (!fileId) return;
+  const id = fileId.toString();
+
+  if (selectedFiles.has(id)) {
+    selectedFiles.delete(id);
+  } else {
+    selectedFiles.add(id);
+  }
+
+  const treeItems = document.querySelectorAll(`.tree-item.file`);
+  treeItems.forEach(item => {
+    const itemId = item.getAttribute('onclick').match(/'([^']+)'/)[1];
+    if (itemId === id) {
+      item.classList.toggle('selected', selectedFiles.has(id));
+    }
+  });
+
+  updateSelectedFiles();
+}
+
+function closeFileDetails() {
+  const modal = document.getElementById('fileDetailsModal');
+  if (modal) {
+    modal.classList.remove('active');
+  }
 }
 
 function expandAllNodes(button) {
@@ -292,83 +460,6 @@ function selectAllFiles(button, repoId, dirPath) {
   updateSelectedFiles();
 }
 
-// Event delegation for directory toggling
-document.addEventListener('click', function(e) {
-  if (e.target.classList.contains('toggle-icon')) {
-    const directory = e.target.closest('.directory');
-    directory.classList.toggle('expanded');
-    e.target.textContent = directory.classList.contains('expanded') ? '▼' : '▶';
-  }
-});
-
-// Main functions
-async function addRepository() {
-  const repoUrl = document.getElementById('repoUrl').value.trim();
-  if (!repoUrl) return;
-
-  hideError('repoError');
-  showLoading('repoLoading');
-
-  try {
-    const response = await fetch('/add_repository', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_url: repoUrl })
-    });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Failed to add repository');
-
-    document.getElementById('repoUrl').value = '';
-    showError('repoError', 'Repository added successfully!', true);
-  } catch (error) {
-    showError('repoError', error.message);
-  } finally {
-    hideLoading('repoLoading');
-  }
-}
-
-async function searchFiles() {
-  const query = document.getElementById('searchQuery').value.trim();
-  if (!query) return;
-
-  hideError('searchError');
-  showLoading('searchLoading');
-
-  try {
-    const response = await fetch('/search_files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to search files');
-    }
-
-    const results = await response.json();
-    console.log('Search results:', results);
-    displaySearchResults(results);
-  } catch (error) {
-    showError('searchError', error.message);
-  } finally {
-    hideLoading('searchLoading');
-  }
-}
-
-function toggleFileSelection(fileId, filePath) {
-  if (!fileId) return;
-  const id = fileId.toString();
-
-  if (selectedFiles.has(id)) {
-    selectedFiles.delete(id);
-  } else {
-    selectedFiles.add(id);
-  }
-  updateSelectedFiles();
-  updateSearchResults();
-}
-
 function updateSelectedFiles() {
   const container = document.getElementById('selectedFiles');
   if (selectedFiles.size === 0) {
@@ -386,20 +477,6 @@ function updateSelectedFiles() {
       </button>
     </div>
   `).join('');
-}
-
-function updateSearchResults() {
-  const buttons = document.querySelectorAll('.result-item button');
-  buttons.forEach(button => {
-    const onclick = button.getAttribute('onclick');
-    if (onclick) {
-      const match = onclick.match(/'([^']+)'/);
-      if (match) {
-        const fileId = match[1];
-        button.textContent = selectedFiles.has(fileId) ? 'Remove from Selection' : 'Add to Selection';
-      }
-    }
-  });
 }
 
 async function submitPrompt() {
@@ -456,11 +533,13 @@ async function submitPrompt() {
   }
 }
 
-// Initialize event listeners when DOM is fully loaded
+// Event Listeners
 document.addEventListener('DOMContentLoaded', function() {
-  // Add Repository
   const addRepoButton = document.getElementById('addRepo');
   const repoUrlInput = document.getElementById('repoUrl');
+  const searchFilesButton = document.getElementById('searchFiles');
+  const searchQueryInput = document.getElementById('searchQuery');
+  const submitPromptButton = document.getElementById('submitPrompt');
 
   if (addRepoButton) {
     addRepoButton.addEventListener('click', addRepository);
@@ -472,10 +551,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // Search Files
-  const searchFilesButton = document.getElementById('searchFiles');
-  const searchQueryInput = document.getElementById('searchQuery');
-
   if (searchFilesButton) {
     searchFilesButton.addEventListener('click', searchFiles);
   }
@@ -486,12 +561,30 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // Submit Prompt
-  const submitPromptButton = document.getElementById('submitPrompt');
   if (submitPromptButton) {
     submitPromptButton.addEventListener('click', submitPrompt);
   }
 
-  // Initialize empty states
   updateSelectedFiles();
+});
+
+document.addEventListener('click', function(event) {
+  const modal = document.getElementById('fileDetailsModal');
+  if (modal && event.target === modal) {
+    closeFileDetails();
+  }
+});
+
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') {
+    closeFileDetails();
+  }
+});
+
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('toggle-icon')) {
+    const directory = e.target.closest('.directory');
+    directory.classList.toggle('expanded');
+    e.target.textContent = directory.classList.contains('expanded') ? '▼' : '▶';
+  }
 });
