@@ -93,6 +93,214 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function tryParseJSON(jsonString, defaultValue) {
+  if (!jsonString) return defaultValue;
+
+  try {
+    // Handle string that might be already an array
+    if (Array.isArray(jsonString)) return jsonString;
+
+    // Try parsing the JSON string
+    return JSON.parse(jsonString);
+  } catch (e) {
+    console.warn('Failed to parse JSON:', e);
+    return defaultValue;
+  }
+}
+
+function displaySearchResults(results) {
+  const resultsContainer = document.getElementById('searchResults');
+  resultsContainer.innerHTML = '';
+
+  if (!results || results.length === 0) {
+    resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
+    return;
+  }
+
+  results.forEach(repo => {
+    const repoElement = document.createElement('div');
+    repoElement.className = 'repository-item';
+
+    // Ensure arrays are properly handled
+    const technologies = Array.isArray(repo.main_technologies) ? repo.main_technologies : [];
+    const features = Array.isArray(repo.key_features) ? repo.key_features : [];
+    const dependencies = Array.isArray(repo.dependencies) ? repo.dependencies : [];
+
+    repoElement.innerHTML = `
+      <div class="repository-header">
+        <h3>
+          <svg class="repo-icon" viewBox="0 0 16 16" width="16" height="16">
+            <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"></path>
+          </svg>
+          ${escapeHtml(repo.name)}
+        </h3>
+        <span class="similarity-score">
+          ${(repo.similarity * 100).toFixed(2)}% match
+        </span>
+      </div>
+
+      <div class="repository-content">
+        <div class="repository-info">
+          <p class="description">${escapeHtml(repo.description || 'No description available')}</p>
+          
+          <div class="metadata">
+            ${technologies.length > 0 ? `
+              <div class="technologies">
+                ${technologies.map(tech => 
+                  `<span class="tag technology">${escapeHtml(tech)}</span>`
+                ).join('')}
+              </div>
+            ` : ''}
+            
+            ${repo.last_updated ? `
+              <div class="last-updated">
+                Last updated: ${new Date(repo.last_updated).toLocaleDateString()}
+              </div>
+            ` : ''}
+          </div>
+
+          <details class="repository-details">
+            <summary>More Details</summary>
+            <div class="details-content">
+              ${repo.overview ? `
+                <section>
+                  <h4>Overview</h4>
+                  <p>${escapeHtml(repo.overview)}</p>
+                </section>
+              ` : ''}
+
+              ${features.length > 0 ? `
+                <section>
+                  <h4>Key Features</h4>
+                  <ul>
+                    ${features.map(feature => 
+                      `<li>${escapeHtml(feature)}</li>`
+                    ).join('')}
+                  </ul>
+                </section>
+              ` : ''}
+
+              ${repo.architecture ? `
+                <section>
+                  <h4>Architecture</h4>
+                  <p>${escapeHtml(repo.architecture)}</p>
+                </section>
+              ` : ''}
+
+              ${dependencies.length > 0 ? `
+                <section>
+                  <h4>Dependencies</h4>
+                  <div class="tags">
+                    ${dependencies.map(dep => 
+                      `<span class="tag dependency">${escapeHtml(dep)}</span>`
+                    ).join('')}
+                  </div>
+                </section>
+              ` : ''}
+            </div>
+          </details>
+        </div>
+
+        <div class="file-tree">
+          <h4>Repository Files</h4>
+          <div class="tree-actions">
+            <button onclick="expandAllNodes(this)">Expand All</button>
+            <button onclick="collapseAllNodes(this)">Collapse All</button>
+          </div>
+          ${buildFileTree(repo.file_tree, repo.id)}
+        </div>
+      </div>
+    `;
+
+    resultsContainer.appendChild(repoElement);
+  });
+}
+
+function buildFileTree(nodes, repoId, path = '') {
+  if (!nodes || nodes.length === 0) return '';
+
+  return `
+    <ul class="tree-list">
+      ${nodes.map(node => {
+        const nodePath = path ? `${path}/${node.name}` : node.name;
+        
+        if (node.type === 'directory') {
+          return `
+            <li class="tree-item directory">
+              <div class="directory-header">
+                <span class="toggle-icon">▶</span>
+                <span class="directory-name">${escapeHtml(node.name)}</span>
+                <button class="select-all" onclick="selectAllFiles(this, ${repoId}, '${nodePath}')">
+                  Select All
+                </button>
+              </div>
+              ${buildFileTree(node.children, repoId, nodePath)}
+            </li>
+          `;
+        } else {
+          return `
+            <li class="tree-item file">
+              <div class="file-header ${selectedFiles.has(node.id.toString()) ? 'selected' : ''}"
+                   onclick="toggleFileSelection('${node.id}', '${nodePath}')">
+                <span class="file-icon">📄</span>
+                <span class="file-name">${escapeHtml(node.name)}</span>
+                <span class="file-language">${escapeHtml(node.language || '')}</span>
+              </div>
+            </li>
+          `;
+        }
+      }).join('')}
+    </ul>
+  `;
+}
+
+function expandAllNodes(button) {
+  const fileTree = button.closest('.file-tree');
+  fileTree.querySelectorAll('.directory').forEach(dir => {
+    dir.classList.add('expanded');
+    dir.querySelector('.toggle-icon').textContent = '▼';
+  });
+}
+
+function collapseAllNodes(button) {
+  const fileTree = button.closest('.file-tree');
+  fileTree.querySelectorAll('.directory').forEach(dir => {
+    dir.classList.remove('expanded');
+    dir.querySelector('.toggle-icon').textContent = '▶';
+  });
+}
+
+function selectAllFiles(button, repoId, dirPath) {
+  const directory = button.closest('.directory');
+  const files = directory.querySelectorAll('.file');
+  const isSelecting = button.textContent === 'Select All';
+
+  files.forEach(file => {
+    const fileHeader = file.querySelector('.file-header');
+    const fileId = fileHeader.getAttribute('onclick').match(/'([^']+)'/)[1];
+
+    if (isSelecting) {
+      selectedFiles.add(fileId);
+      fileHeader.classList.add('selected');
+    } else {
+      selectedFiles.delete(fileId);
+      fileHeader.classList.remove('selected');
+    }
+  });
+
+  button.textContent = isSelecting ? 'Deselect All' : 'Select All';
+  updateSelectedFiles();
+}
+
+// Event delegation for directory toggling
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('toggle-icon')) {
+    const directory = e.target.closest('.directory');
+    directory.classList.toggle('expanded');
+    e.target.textContent = directory.classList.contains('expanded') ? '▼' : '▶';
+  }
+});
+
 // Main functions
 async function addRepository() {
   const repoUrl = document.getElementById('repoUrl').value.trim();
@@ -145,190 +353,6 @@ async function searchFiles() {
     showError('searchError', error.message);
   } finally {
     hideLoading('searchLoading');
-  }
-}
-
-function displaySearchResults(results) {
-  const resultsContainer = document.getElementById('searchResults');
-  resultsContainer.innerHTML = '';
-
-  if (!results || results.length === 0) {
-    resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
-    return;
-  }
-
-  results.forEach(result => {
-    const resultItem = document.createElement('div');
-    resultItem.className = 'result-item';
-
-    if (result.type === 'repository') {
-      const mainTechnologies = tryParseJSON(result.main_technologies, []);
-      const keyFeatures = tryParseJSON(result.key_features, []);
-      const dependencies = tryParseJSON(result.dependencies, []);
-
-      resultItem.innerHTML = `
-        <div class="repo-result">
-          <div class="repo-header">
-            <h3>
-              <svg class="repo-icon" viewBox="0 0 16 16" width="16" height="16">
-                <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"></path>
-              </svg>
-              ${escapeHtml(result.name)}
-            </h3>
-            <span class="similarity-score">
-              <svg class="similarity-icon" viewBox="0 0 16 16" width="16" height="16">
-                <path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path>
-                <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path>
-              </svg>
-              ${(result.similarity * 100).toFixed(2)}% match
-            </span>
-          </div>
-
-          <div class="repo-details">
-            <div class="repo-description">
-              ${escapeHtml(result.description || 'No description available')}
-            </div>
-
-            <details class="repo-additional-info">
-              <summary>More Information</summary>
-              <div class="info-grid">
-                ${result.overview ? `
-                  <div class="info-section">
-                    <h4>Overview</h4>
-                    <p>${escapeHtml(result.overview)}</p>
-                  </div>
-                ` : ''}
-
-                ${mainTechnologies.length > 0 ? `
-                  <div class="info-section">
-                    <h4>Technologies</h4>
-                    <div class="tags">
-                      ${mainTechnologies.map(tech => `
-                        <span class="tag">${escapeHtml(tech)}</span>
-                      `).join('')}
-                    </div>
-                  </div>
-                ` : ''}
-
-                ${keyFeatures.length > 0 ? `
-                  <div class="info-section">
-                    <h4>Key Features</h4>
-                    <ul class="feature-list">
-                      ${keyFeatures.map(feature => `
-                        <li>${escapeHtml(feature)}</li>
-                      `).join('')}
-                    </ul>
-                  </div>
-                ` : ''}
-
-                ${result.architecture ? `
-                  <div class="info-section">
-                    <h4>Architecture</h4>
-                    <p>${escapeHtml(result.architecture)}</p>
-                  </div>
-                ` : ''}
-
-                ${dependencies.length > 0 ? `
-                  <div class="info-section">
-                    <h4>Dependencies</h4>
-                    <div class="tags">
-                      ${dependencies.map(dep => `
-                        <span class="tag dependency">${escapeHtml(dep)}</span>
-                      `).join('')}
-                    </div>
-                  </div>
-                ` : ''}
-
-                <div class="info-section">
-                  <h4>Last Updated</h4>
-                  <p>${new Date(result.last_updated).toLocaleString()}</p>
-                </div>
-              </div>
-            </details>
-          </div>
-        </div>
-      `;
-    } else if (result.type === 'file') {
-      const language = result.name ? getLanguageFromPath(result.name) : 'plaintext';
-      const keyComponents = tryParseJSON(result.key_components, []);
-      const dependencies = tryParseJSON(result.dependencies, []);
-
-      resultItem.innerHTML = `
-        <div class="file-result">
-          <div class="file-header">
-            <h3>
-              <svg class="file-icon" viewBox="0 0 16 16" width="16" height="16">
-                <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path>
-              </svg>
-              ${escapeHtml(result.name || 'Unnamed File')}
-            </h3>
-            <span class="similarity-score">
-              <svg class="similarity-icon" viewBox="0 0 16 16" width="16" height="16">
-                <path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path>
-                <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path>
-              </svg>
-              ${(result.similarity * 100).toFixed(2)}% match
-            </span>
-          </div>
-
-          <div class="file-metadata">
-            <span class="language">
-              <span class="language-dot" style="background-color: ${getLanguageColor(result.primary_language)}"></span>
-              ${escapeHtml(result.primary_language || 'Unknown')}
-            </span>
-            <span class="repo-reference">Repository ID: ${result.repo_id}</span>
-          </div>
-
-          ${result.description ? `
-            <div class="file-description">
-              ${escapeHtml(result.description)}
-            </div>
-          ` : ''}
-
-          <div class="file-details">
-            ${keyComponents.length > 0 ? `
-              <div class="components-section">
-                <h4>Key Components</h4>
-                <ul class="component-list">
-                  ${keyComponents.map(component => `
-                    <li>${escapeHtml(component)}</li>
-                  `).join('')}
-                </ul>
-              </div>
-            ` : ''}
-
-            ${dependencies.length > 0 ? `
-              <div class="dependencies-section">
-                <h4>Dependencies</h4>
-                <div class="tags">
-                  ${dependencies.map(dep => `
-                    <span class="tag dependency">${escapeHtml(dep)}</span>
-                  `).join('')}
-                </div>
-              </div>
-            ` : ''}
-          </div>
-
-          <div class="file-actions">
-            <button onclick="toggleFileSelection('${result.id}', '${escapeHtml(result.name || '')}')">
-              ${selectedFiles.has(result.id.toString()) ? 'Remove from Selection' : 'Add to Selection'}
-            </button>
-          </div>
-
-          <details class="code-section">
-            <summary>View Code</summary>
-            <pre class="line-numbers"><code class="language-${language}">${escapeHtml(result.content || '')}</code></pre>
-          </details>
-        </div>
-      `;
-    }
-
-    resultsContainer.appendChild(resultItem);
-  });
-
-  // Manually trigger Prism highlighting
-  if (typeof Prism !== 'undefined') {
-    Prism.highlightAll();
   }
 }
 
