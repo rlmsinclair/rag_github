@@ -13,7 +13,6 @@ import zipfile
 import io
 
 
-
 class RAGSystem:
     def __init__(self, mysql_config: Dict[str, str], anthropic_api_key: str,
                  github_token: str = None, github_username: str = None):
@@ -24,74 +23,34 @@ class RAGSystem:
         self.setup_database()
         self.github_headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
 
-    # Update the stream_query_with_context method in rag_system.py
-    # Update the stream_query_with_context method in rag_system.py
-    def stream_query_with_context(self, search_query: str, prompt: str) -> Generator[str, None, None]:
-        """Stream query response from Claude with relevant context."""
-        similar_contents = self.search_similar_content(search_query)
-        context = "\n\n".join([
-            f"From {result['repo_name']}/{result['file_path']}:\n{result['content'][:1000]}"
-            for result in similar_contents
-        ])
+    def is_binary_content(self, content: bytes) -> bool:
+        """Check if content appears to be binary."""
+        textchars = bytearray({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7f})
+        return bool(content.translate(None, textchars))
 
-        stream = self.client.messages.stream(
-            model="claude-3-5-sonnet-20241022",
-            system="Respond in short and clear sentences.",
-            max_tokens=1000,
-            temperature=0,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"You are a helpful assistant. Use the following code context to answer questions.\n\nContext from repository search for '{search_query}':\n\n{context}\n\nPrompt: {prompt}"
-                        }
-                    ]
-                }
-            ]
-        )
+    def is_valid_text_file(self, file_path: str, content: bytes) -> bool:
+        """Check if a file is a valid text file based on extension and content."""
+        # Skip certain directories
+        if any(part.startswith('.') for part in Path(file_path).parts):
+            return False
 
-        for chunk in stream:
-            if chunk.type == "content_block_delta":
-                yield chunk.text
-            elif chunk.type == "message_delta":
-                continue
-            elif chunk.type == "error":
-                yield f"Error: {chunk.error}"
-
-    def parse_github_url(self, repo_url: str) -> tuple:
-        """Extract owner and repo name from GitHub URL."""
-        path = urlparse(repo_url).path.strip('/')
-        owner, repo = path.split('/')
-        # Remove .git if present
-        repo = repo.replace('.git', '')
-        return owner, repo
-
-    def is_text_file(self, file_path: str) -> bool:
-        """Check if a file is a text file by file extension and content."""
-        # Common text file extensions
-        text_extensions = {
-            '.txt', '.md', '.py', '.js', '.jsx', '.ts', '.tsx', '.html', '.css',
-            '.scss', '.json', '.yaml', '.yml', '.xml', '.csv', '.ini', '.conf',
-            '.sh', '.bash', '.zsh', '.sql', '.php', '.rb', '.java', '.c', '.cpp',
-            '.h', '.hpp', '.cs', '.go', '.rs', '.swift', '.kt', '.kts', '.r',
-            '.dart', '.lua', '.pl', '.pm', '.t', '.vim', '.gradle', '.env',
-            '.gitignore', '.dockerignore', '.editorconfig', 'Dockerfile',
-            'Makefile', '.vue', '.svelte', '.astro', '.rs', '.toml'
+        # Skip common binary file extensions
+        binary_extensions = {
+            '.pyc', '.pyo', '.so', '.dll', '.dylib', '.jar', '.war', '.ear',
+            '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar', '.pdf', '.doc',
+            '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.jpg', '.jpeg', '.png',
+            '.gif', '.bmp', '.ico', '.tiff', '.class', '.exe', '.bin', '.dat',
+            '.db', '.sqlite', '.o', '.obj', '.lib', '.a', '.mo', '.ttf', '.woff',
+            '.woff2', '.eot'
         }
 
-        # Check extension
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext in text_extensions:
-            return True
+        if Path(file_path).suffix.lower() in binary_extensions:
+            return False
 
-        # For files without extension, try reading as text
+        # Check if content is binary
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                f.read(1024)  # Try reading first 1KB
-            return True
-        except UnicodeDecodeError:
+            return not self.is_binary_content(content)
+        except:
             return False
 
     def clone_repository(self, repo_url: str) -> None:
@@ -120,6 +79,7 @@ class RAGSystem:
             conn = mysql.connector.connect(**self.mysql_config)
             cursor = conn.cursor()
 
+            # Insert or update repository record
             cursor.execute(
                 "INSERT INTO repositories (repo_url, repo_name) VALUES (%s, %s) "
                 "ON DUPLICATE KEY UPDATE last_updated=CURRENT_TIMESTAMP",
@@ -132,54 +92,60 @@ class RAGSystem:
                 cursor.execute("SELECT id FROM repositories WHERE repo_url = %s", (repo_url,))
                 repo_id = cursor.fetchone()[0]
 
+            # Clear existing files for this repository
+            cursor.execute("DELETE f FROM files f WHERE f.repo_id = %s", (repo_id,))
+            conn.commit()
+
             # Process all files in the repository
             for root, _, files in os.walk(base_path):
-                if '.git' in root:
-                    continue
-
                 for file in files:
                     file_path = os.path.join(root, file)
                     relative_path = os.path.relpath(file_path, base_path)
 
-                    # Skip if not a text file
-                    if not self.is_text_file(file_path):
-                        print(f"Skipping non-text file: {relative_path}")
-                        continue
-
                     try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
+                        with open(file_path, 'rb') as f:
+                            content_bytes = f.read()
+
+                        # Skip if not a valid text file
+                        if not self.is_valid_text_file(relative_path, content_bytes):
+                            print(f"Skipping binary or invalid file: {relative_path}")
+                            continue
+
+                        try:
+                            content = content_bytes.decode('utf-8')
+                        except UnicodeDecodeError:
+                            print(f"Skipping file due to encoding issues: {relative_path}")
+                            continue
 
                         # Skip empty files or files that are too large
                         if not content.strip() or len(content) > 1_000_000:  # Skip files larger than 1MB
                             print(f"Skipping empty or large file: {relative_path}")
                             continue
 
+                        # Insert file content
                         cursor.execute(
-                            "INSERT INTO files (repo_id, file_path, content) VALUES (%s, %s, %s) "
-                            "ON DUPLICATE KEY UPDATE content=VALUES(content)",
+                            "INSERT INTO files (repo_id, file_path, content) VALUES (%s, %s, %s)",
                             (repo_id, relative_path, content)
                         )
                         file_id = cursor.lastrowid
 
                         try:
+                            # Generate and store embedding
                             embedding = self.generate_embedding(content)
                             embedding_json = json.dumps(embedding)
 
                             cursor.execute(
-                                "INSERT INTO embeddings (file_id, embedding) VALUES (%s, %s) "
-                                "ON DUPLICATE KEY UPDATE embedding=VALUES(embedding)",
+                                "INSERT INTO embeddings (file_id, embedding) VALUES (%s, %s)",
                                 (file_id, embedding_json)
                             )
                             conn.commit()
+                            print(f"Successfully processed: {relative_path}")
                         except Exception as e:
                             print(f"Error generating embedding for {relative_path}: {str(e)}")
                             # Delete the file entry if we couldn't generate an embedding
                             cursor.execute("DELETE FROM files WHERE id = %s", (file_id,))
                             conn.commit()
 
-                    except UnicodeDecodeError:
-                        print(f"Skipping file due to encoding issues: {relative_path}")
                     except Exception as e:
                         print(f"Error processing file {relative_path}: {str(e)}")
 
@@ -193,76 +159,13 @@ class RAGSystem:
             if 'conn' in locals():
                 conn.close()
 
-    def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using BGE-large model via Ollama API."""
-        response = requests.post(
-            f"{os.getenv('OLLAMA_API_URL')}/api/embeddings",
-            json={
-                "model": "bge-large",
-                "prompt": text
-            }
-        )
-        return response.json()['embedding']
-
-    def search_similar_content(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for similar content using vector similarity."""
-        query_embedding = self.generate_embedding(query)
-        query_embedding_array = np.array(query_embedding)
-
-        conn = mysql.connector.connect(**self.mysql_config)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT f.content, f.file_path, r.repo_name, e.embedding
-            FROM embeddings e
-            JOIN files f ON e.file_id = f.id
-            JOIN repositories r ON f.repo_id = r.id
-        ''')
-
-        results = []
-        for content, file_path, repo_name, embedding_str in cursor:
-            embedding = np.array(json.loads(embedding_str))
-            similarity = np.dot(query_embedding_array, embedding) / (
-                    np.linalg.norm(query_embedding_array) * np.linalg.norm(embedding)
-            )
-            results.append({
-                'content': content,
-                'file_path': file_path,
-                'repo_name': repo_name,
-                'similarity': similarity
-            })
-
-        conn.close()
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:top_k]
-
-    def stream_query_with_context(self, query: str, system_prompt: str = "You are a helpful assistant.") -> Generator[
-        str, None, None]:
-        """Stream query response from Claude with relevant context."""
-        similar_contents = self.search_similar_content(query)
-        context = "\n\n".join([
-            f"From {result['repo_name']}/{result['file_path']}:\n{result['content'][:1000]}"
-            for result in similar_contents
-        ])
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": f"Context:\n{context}\n\nQuery: {query}"
-            }
-        ]
-
-        with self.client.messages.stream(
-                model="claude-3-sonnet-20240229",
-                messages=messages,
-                max_tokens=1024
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+    def parse_github_url(self, repo_url: str) -> tuple:
+        """Extract owner and repo name from GitHub URL."""
+        path = urlparse(repo_url).path.strip('/')
+        owner, repo = path.split('/')
+        # Remove .git if present
+        repo = repo.replace('.git', '')
+        return owner, repo
 
     def setup_database(self) -> None:
         """Create necessary database tables if they don't exist."""
@@ -291,7 +194,7 @@ class RAGSystem:
                 repo_id INT,
                 file_path VARCHAR(1000),
                 content LONGTEXT,
-                FOREIGN KEY (repo_id) REFERENCES repositories(id),
+                FOREIGN KEY (repo_id) REFERENCES repositories(id) ON DELETE CASCADE,
                 INDEX idx_repo_path (repo_id, file_path(750))
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         ''')
@@ -302,9 +205,103 @@ class RAGSystem:
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 file_id INT,
                 embedding LONGTEXT,
-                FOREIGN KEY (file_id) REFERENCES files(id)
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                INDEX idx_file_id (file_id)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         ''')
 
         conn.commit()
         conn.close()
+
+    def generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding using BGE-large model via Ollama API."""
+        response = requests.post(
+            f"{os.getenv('OLLAMA_API_URL')}/api/embeddings",
+            json={
+                "model": "bge-large",
+                "prompt": text
+            }
+        )
+        return response.json()['embedding']
+
+    def search_files(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Search for similar content using vector similarity."""
+        query_embedding = self.generate_embedding(query)
+        query_embedding_array = np.array(query_embedding)
+
+        conn = mysql.connector.connect(**self.mysql_config)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT f.id, f.content, f.file_path, r.repo_name, e.embedding
+            FROM embeddings e
+            JOIN files f ON e.file_id = f.id
+            JOIN repositories r ON f.repo_id = r.id
+        ''')
+
+        results = []
+        for file_id, content, file_path, repo_name, embedding_str in cursor:
+            embedding = np.array(json.loads(embedding_str))
+            similarity = np.dot(query_embedding_array, embedding) / (
+                    np.linalg.norm(query_embedding_array) * np.linalg.norm(embedding)
+            )
+            results.append({
+                'id': file_id,
+                'content': content,
+                'file_path': file_path,
+                'repo_name': repo_name,
+                'similarity': similarity
+            })
+
+        conn.close()
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return results[:top_k]
+
+    def get_file_contents(self, file_ids: List[int]) -> List[Dict[str, str]]:
+        """Retrieve file contents for selected files."""
+        conn = mysql.connector.connect(**self.mysql_config)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT f.content, f.file_path, r.repo_name
+            FROM files f
+            JOIN repositories r ON f.repo_id = r.id
+            WHERE f.id IN (%s)
+        ''' % ','.join(['%s'] * len(file_ids)), file_ids)
+
+        results = []
+        for content, file_path, repo_name in cursor:
+            results.append({
+                'content': content,
+                'file_path': file_path,
+                'repo_name': repo_name
+            })
+
+        conn.close()
+        return results
+
+    def stream_prompt_response(self, selected_files: List[Dict[str, str]], prompt: str) -> Generator[str, None, None]:
+        """Stream response for the prompt with selected file contents."""
+        context = "\n\n".join([
+            f"From {file['repo_name']}/{file['file_path']}:\n{file['content']}"
+            for file in selected_files
+        ])
+
+        stream = self.client.messages.stream(
+            model="claude-3-sonnet-20240229",
+            system="You are a helpful assistant. Respond in short and clear sentences.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Context:\n{context}\n\nPrompt: {prompt}"
+                }
+            ]
+        )
+
+        for chunk in stream:
+            if chunk.type == "content_block_delta":
+                yield chunk.text
+            elif chunk.type == "message_delta":
+                continue
+            elif chunk.type == "error":
+                yield f"Error: {chunk.error}"

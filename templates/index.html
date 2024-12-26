@@ -5,9 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RAG System UI</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js"></script>
+    <style>
+        .file-preview {
+            max-height: calc(100vh - 400px);
+            overflow-y: auto;
+        }
+    </style>
 </head>
 <body class="bg-gray-100 min-h-screen p-8">
-    <div class="max-w-4xl mx-auto">
+    <div class="max-w-7xl mx-auto">
         <h1 class="text-3xl font-bold mb-8">RAG System Interface</h1>
 
         <!-- Repository Addition Form -->
@@ -30,78 +40,225 @@
             <div id="repoStatus" class="mt-2 text-sm"></div>
         </div>
 
-        <!-- Query Form -->
+        <!-- Query System -->
         <div class="bg-white p-6 rounded-lg shadow-md">
             <h2 class="text-xl font-semibold mb-4">Query System</h2>
 
-            <!-- Search Query Input -->
-            <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-2">
-                    Search Query (to find relevant files)
-                </label>
-                <input
-                    type="text"
-                    id="searchQuery"
-                    placeholder="e.g., 'authentication implementation' or 'database schema'"
-                    class="w-full p-2 border rounded"
-                >
-            </div>
-
-            <!-- Prompt Input -->
-            <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-2">
-                    Prompt (what to do with the found files)
-                </label>
-                <textarea
-                    id="promptInput"
-                    placeholder="e.g., 'Explain how authentication is implemented' or 'List all database tables and their relationships'"
-                    class="w-full p-2 border rounded h-32"
-                ></textarea>
-            </div>
-
-            <div class="flex gap-4 items-center">
-                <button
-                    onclick="submitQuery()"
-                    id="submitButton"
-                    class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-                >
-                    Submit Query
-                </button>
-                <div id="loadingIndicator" class="hidden">
-                    <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-green-500"></div>
+            <!-- Search Input -->
+            <div class="mb-6">
+                <div class="flex gap-4 mb-4">
+                    <input
+                        type="text"
+                        id="searchQuery"
+                        placeholder="Enter search query to find relevant files"
+                        class="flex-1 p-2 border rounded"
+                    >
+                    <button
+                        onclick="searchFiles()"
+                        id="searchButton"
+                        class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                    >
+                        Search Files
+                    </button>
                 </div>
             </div>
 
+            <!-- Split View Container -->
+            <div class="flex gap-6">
+                <!-- Left Side: File Selection -->
+                <div class="w-1/2">
+                    <h3 class="text-lg font-medium mb-4">Selected Files</h3>
+                    <div id="searchResults" class="space-y-2 max-h-[500px] overflow-y-auto"></div>
+                </div>
+
+                <!-- Right Side: File Preview -->
+                <div class="w-1/2">
+                    <h3 class="text-lg font-medium mb-4">File Preview</h3>
+                    <div id="filePreview" class="file-preview p-4 bg-gray-50 rounded">
+                        <div class="text-gray-500 italic">Select a file to preview its contents</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Prompt Input -->
+            <div class="mt-8">
+                <h3 class="text-lg font-medium mb-4">Enter Your Prompt</h3>
+                <textarea
+                    id="promptInput"
+                    placeholder="Enter your prompt to analyze the selected files"
+                    class="w-full p-2 border rounded h-32 mb-4"
+                    disabled
+                ></textarea>
+                <div class="flex items-center gap-4">
+                    <button
+                        onclick="submitPrompt()"
+                        id="submitButton"
+                        class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled
+                    >
+                        Submit Prompt
+                    </button>
+                    <div id="selectedFilesCount" class="text-sm text-gray-600">
+                        No files selected
+                    </div>
+                    <div id="loadingIndicator" class="hidden">
+                        <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-green-500"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Response Area -->
             <div id="response" class="mt-4 p-4 bg-gray-50 rounded min-h-[200px] whitespace-pre-wrap"></div>
         </div>
     </div>
 
     <script>
-        async function submitQuery() {
-            const searchQuery = document.getElementById('searchQuery').value;
+        let selectedFiles = new Set();
+        let fileContents = new Map();
+
+        function getFileExtension(filename) {
+            return filename.split('.').pop().toLowerCase();
+        }
+
+        function getPrismLanguage(filename) {
+            const ext = getFileExtension(filename);
+            const languageMap = {
+                'py': 'python',
+                'js': 'javascript',
+                'jsx': 'javascript',
+                'ts': 'typescript',
+                'tsx': 'typescript',
+                'html': 'html',
+                'css': 'css',
+                'json': 'json',
+                'md': 'markdown'
+            };
+            return languageMap[ext] || 'plaintext';
+        }
+
+        function updateFilePreview(fileId) {
+            const filePreview = document.getElementById('filePreview');
+            const fileData = fileContents.get(fileId);
+
+            if (!fileData) {
+                filePreview.innerHTML = '<div class="text-gray-500 italic">Select a file to preview its contents</div>';
+                return;
+            }
+
+            const language = getPrismLanguage(fileData.file_path);
+            const highlightedCode = Prism.highlight(
+                fileData.content,
+                Prism.languages[language],
+                language
+            );
+
+            filePreview.innerHTML = `
+                <div class="mb-2 font-medium">${fileData.repo_name}/${fileData.file_path}</div>
+                <pre class="language-${language}"><code class="language-${language}">${highlightedCode}</code></pre>
+            `;
+        }
+
+        function updateSelectedFilesCount() {
+            const count = selectedFiles.size;
+            const countElement = document.getElementById('selectedFilesCount');
+            countElement.textContent = count === 0
+                ? 'No files selected'
+                : `${count} file${count === 1 ? '' : 's'} selected`;
+        }
+
+        function toggleFileSelection(fileId, element) {
+            if (selectedFiles.has(fileId)) {
+                selectedFiles.delete(fileId);
+                element.classList.remove('bg-blue-100');
+            } else {
+                selectedFiles.add(fileId);
+                element.classList.add('bg-blue-100');
+            }
+
+            updateSelectedFilesCount();
+            updateFilePreview(fileId);
+
+            const promptInput = document.getElementById('promptInput');
+            const submitButton = document.getElementById('submitButton');
+            promptInput.disabled = selectedFiles.size === 0;
+            submitButton.disabled = selectedFiles.size === 0;
+        }
+
+        async function searchFiles() {
+            const query = document.getElementById('searchQuery').value;
+            const resultsDiv = document.getElementById('searchResults');
+            const searchButton = document.getElementById('searchButton');
+
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+
+            searchButton.disabled = true;
+            resultsDiv.innerHTML = 'Searching...';
+            selectedFiles.clear();
+            fileContents.clear();
+            updateSelectedFilesCount();
+            updateFilePreview(null);
+
+            try {
+                const response = await fetch('/search_files', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query }),
+                });
+
+                const files = await response.json();
+
+                if (response.ok) {
+                    files.forEach(file => {
+                        fileContents.set(file.id, file);
+                    });
+
+                    resultsDiv.innerHTML = files.map(file => `
+                        <div
+                            class="p-3 border rounded cursor-pointer hover:bg-gray-50 transition-colors"
+                            onclick="toggleFileSelection(${file.id}, this)"
+                        >
+                            <div class="font-medium">${file.repo_name}/${file.file_path}</div>
+                            <div class="text-sm text-gray-600 mt-1">${file.preview}</div>
+                        </div>
+                    `).join('');
+                } else {
+                    throw new Error(files.error);
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `Error: ${error.message}`;
+            } finally {
+                searchButton.disabled = false;
+            }
+        }
+
+        async function submitPrompt() {
             const prompt = document.getElementById('promptInput').value;
             const responseDiv = document.getElementById('response');
             const loadingIndicator = document.getElementById('loadingIndicator');
             const submitButton = document.getElementById('submitButton');
 
-            if (!searchQuery || !prompt) {
-                alert('Please provide both a search query and a prompt');
+            if (!prompt) {
+                alert('Please enter a prompt');
                 return;
             }
 
             responseDiv.textContent = '';
             loadingIndicator.classList.remove('hidden');
             submitButton.disabled = true;
-            submitButton.classList.add('opacity-50');
 
             try {
-                const response = await fetch('/stream_query', {
+                const response = await fetch('/stream_prompt', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        search_query: searchQuery,
+                        file_ids: Array.from(selectedFiles),
                         prompt: prompt
                     })
                 });
@@ -133,13 +290,17 @@
             } finally {
                 loadingIndicator.classList.add('hidden');
                 submitButton.disabled = false;
-                submitButton.classList.remove('opacity-50');
             }
         }
 
         async function addRepository() {
             const repoUrl = document.getElementById('repoUrl').value;
             const statusDiv = document.getElementById('repoStatus');
+
+            if (!repoUrl) {
+                alert('Please enter a repository URL');
+                return;
+            }
 
             statusDiv.textContent = 'Adding repository...';
             statusDiv.className = 'mt-2 text-sm text-blue-500';
