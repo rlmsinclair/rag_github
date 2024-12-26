@@ -14,6 +14,16 @@
             max-height: calc(100vh - 400px);
             overflow-y: auto;
         }
+        .folder-toggle {
+            cursor: pointer;
+            user-select: none;
+        }
+        .folder-toggle:hover {
+            background-color: rgba(0, 0, 0, 0.05);
+        }
+        .folder-content {
+            margin-left: 1.5rem;
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen p-8">
@@ -27,8 +37,9 @@
                 <input
                     type="text"
                     id="repoUrl"
-                    placeholder="Enter GitHub repository URL"
+                    placeholder="Enter GitHub repository URL (Press Enter to add)"
                     class="flex-1 p-2 border rounded"
+                    onkeydown="handleRepoKeyDown(event)"
                 >
                 <button
                     onclick="addRepository()"
@@ -50,8 +61,9 @@
                     <input
                         type="text"
                         id="searchQuery"
-                        placeholder="Enter search query to find relevant files"
+                        placeholder="Enter search query to find relevant files (Press Enter to search)"
                         class="flex-1 p-2 border rounded"
+                        onkeydown="handleSearchKeyDown(event)"
                     >
                     <button
                         onclick="searchFiles()"
@@ -65,17 +77,17 @@
 
             <!-- Split View Container -->
             <div class="flex gap-6">
-                <!-- Left Side: File Selection -->
+                <!-- Left Side: Search Results and File Selection -->
                 <div class="w-1/2">
-                    <h3 class="text-lg font-medium mb-4">Selected Files</h3>
+                    <h3 class="text-lg font-medium mb-4">Results</h3>
                     <div id="searchResults" class="space-y-2 max-h-[500px] overflow-y-auto"></div>
                 </div>
 
-                <!-- Right Side: File Preview -->
+                <!-- Right Side: Preview -->
                 <div class="w-1/2">
-                    <h3 class="text-lg font-medium mb-4">File Preview</h3>
-                    <div id="filePreview" class="file-preview p-4 bg-gray-50 rounded">
-                        <div class="text-gray-500 italic">Select a file to preview its contents</div>
+                    <h3 class="text-lg font-medium mb-4">Preview</h3>
+                    <div id="preview" class="file-preview p-4 bg-gray-50 rounded">
+                        <div class="text-gray-500 italic">Select an item to preview its contents</div>
                     </div>
                 </div>
             </div>
@@ -83,11 +95,15 @@
             <!-- Prompt Input -->
             <div class="mt-8">
                 <h3 class="text-lg font-medium mb-4">Enter Your Prompt</h3>
+                <div class="text-sm text-gray-600 mb-2">
+                    Press Enter to submit, Shift + Enter for new line
+                </div>
                 <textarea
                     id="promptInput"
                     placeholder="Enter your prompt to analyze the selected files"
                     class="w-full p-2 border rounded h-32 mb-4"
                     disabled
+                    onkeydown="handlePromptKeyDown(event)"
                 ></textarea>
                 <div class="flex items-center gap-4">
                     <button
@@ -115,6 +131,7 @@
     <script>
         let selectedFiles = new Set();
         let fileContents = new Map();
+        let currentRepository = null;
 
         function getFileExtension(filename) {
             return filename.split('.').pop().toLowerCase();
@@ -136,12 +153,79 @@
             return languageMap[ext] || 'plaintext';
         }
 
+        function toggleFolder(repoId, folderPath) {
+            const folderContent = document.querySelector(`#folder-${repoId}-${folderPath.replace(/\//g, '-')}`);
+            if (folderContent) {
+                folderContent.classList.toggle('hidden');
+                const icon = document.querySelector(`#folder-icon-${repoId}-${folderPath.replace(/\//g, '-')}`);
+                if (icon) {
+                    icon.textContent = folderContent.classList.contains('hidden') ? '📁' : '📂';
+                }
+            }
+        }
+
+        function selectAllInFolder(repoId, folderPath, event) {
+            event.stopPropagation();
+            const files = Array.from(fileContents.values())
+                .filter(file =>
+                    file.repo_id === repoId &&
+                    file.file_path.startsWith(folderPath)
+                );
+
+            const allSelected = files.every(file => selectedFiles.has(file.id));
+
+            files.forEach(file => {
+                const element = document.querySelector(`#file-${file.id}`);
+                if (allSelected) {
+                    selectedFiles.delete(file.id);
+                    element?.classList.remove('bg-blue-100');
+                } else {
+                    selectedFiles.add(file.id);
+                    element?.classList.add('bg-blue-100');
+                }
+            });
+
+            updateSelectedFilesCount();
+            updatePromptState();
+        }
+
+        function showRepositoryPreview(repo) {
+            const preview = document.getElementById('preview');
+            preview.innerHTML = `
+                <div class="mb-4">
+                    <h4 class="text-lg font-medium">${repo.repo_name}</h4>
+                    <div class="mt-2">
+                        <p class="font-medium">Overview:</p>
+                        <p class="text-gray-600">${repo.overview}</p>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Main Technologies:</p>
+                        <p class="text-gray-600">${repo.main_technologies.join(', ')}</p>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Key Features:</p>
+                        <ul class="list-disc pl-5 text-gray-600">
+                            ${repo.key_features.map(f => `<li>${f}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Architecture:</p>
+                        <p class="text-gray-600">${repo.architecture}</p>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Dependencies:</p>
+                        <p class="text-gray-600">${repo.dependencies.join(', ')}</p>
+                    </div>
+                </div>
+            `;
+        }
+
         function updateFilePreview(fileId) {
-            const filePreview = document.getElementById('filePreview');
             const fileData = fileContents.get(fileId);
+            const preview = document.getElementById('preview');
 
             if (!fileData) {
-                filePreview.innerHTML = '<div class="text-gray-500 italic">Select a file to preview its contents</div>';
+                preview.innerHTML = '<div class="text-gray-500 italic">Select an item to preview its contents</div>';
                 return;
             }
 
@@ -152,9 +236,28 @@
                 language
             );
 
-            filePreview.innerHTML = `
-                <div class="mb-2 font-medium">${fileData.repo_name}/${fileData.file_path}</div>
-                <pre class="language-${language}"><code class="language-${language}">${highlightedCode}</code></pre>
+            preview.innerHTML = `
+                <div class="mb-2">
+                    <div class="font-medium">${fileData.repo_name}/${fileData.file_path}</div>
+                    <div class="mt-2">
+                        <p class="font-medium">Description:</p>
+                        <p class="text-gray-600">${fileData.description}</p>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Key Components:</p>
+                        <ul class="list-disc pl-5 text-gray-600">
+                            ${fileData.key_components.map(c => `<li>${c}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div class="mt-2">
+                        <p class="font-medium">Dependencies:</p>
+                        <p class="text-gray-600">${fileData.dependencies.join(', ')}</p>
+                    </div>
+                </div>
+                <div class="mt-4">
+                    <p class="font-medium">Content:</p>
+                    <pre class="language-${language}"><code class="language-${language}">${highlightedCode}</code></pre>
+                </div>
             `;
         }
 
@@ -164,6 +267,14 @@
             countElement.textContent = count === 0
                 ? 'No files selected'
                 : `${count} file${count === 1 ? '' : 's'} selected`;
+        }
+
+        function updatePromptState() {
+            const promptInput = document.getElementById('promptInput');
+            const submitButton = document.getElementById('submitButton');
+            const disabled = selectedFiles.size === 0;
+            promptInput.disabled = disabled;
+            submitButton.disabled = disabled;
         }
 
         function toggleFileSelection(fileId, element) {
@@ -176,12 +287,34 @@
             }
 
             updateSelectedFilesCount();
+            updatePromptState();
             updateFilePreview(fileId);
+        }
 
-            const promptInput = document.getElementById('promptInput');
-            const submitButton = document.getElementById('submitButton');
-            promptInput.disabled = selectedFiles.size === 0;
-            submitButton.disabled = selectedFiles.size === 0;
+        function handleRepoKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                addRepository();
+            }
+        }
+
+        function handleSearchKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                searchFiles();
+            }
+        }
+
+        function handlePromptKeyDown(event) {
+            if (event.key === 'Enter') {
+                if (event.shiftKey) {
+                    // Let the default behavior happen (new line)
+                    return;
+                } else {
+                    event.preventDefault();
+                    submitPrompt();
+                }
+            }
         }
 
         async function searchFiles() {
@@ -198,7 +331,9 @@
             resultsDiv.innerHTML = 'Searching...';
             selectedFiles.clear();
             fileContents.clear();
+            currentRepository = null;
             updateSelectedFilesCount();
+            updatePromptState();
             updateFilePreview(null);
 
             try {
@@ -210,24 +345,123 @@
                     body: JSON.stringify({ query }),
                 });
 
-                const files = await response.json();
+                const results = await response.json();
 
                 if (response.ok) {
+                    // Group results by repository
+                    const repositories = results.filter(r => r.type === 'repository');
+                    const files = results.filter(r => r.type === 'file');
+
+                    // Store file contents
                     files.forEach(file => {
                         fileContents.set(file.id, file);
                     });
 
-                    resultsDiv.innerHTML = files.map(file => `
-                        <div
-                            class="p-3 border rounded cursor-pointer hover:bg-gray-50 transition-colors"
-                            onclick="toggleFileSelection(${file.id}, this)"
-                        >
-                            <div class="font-medium">${file.repo_name}/${file.file_path}</div>
-                            <div class="text-sm text-gray-600 mt-1">${file.preview}</div>
-                        </div>
-                    `).join('');
+                    // Generate HTML
+                    let html = '';
+
+                    // Repositories section
+                    if (repositories.length > 0) {
+                        html += '<div class="mb-6"><h4 class="text-md font-medium mb-2">Repositories</h4>';
+                        repositories.forEach(repo => {
+                            html += `
+                                <div class="p-3 border rounded cursor-pointer hover:bg-gray-50 transition-colors mb-2"
+                                     onclick="showRepositoryPreview(${JSON.stringify(repo).replace(/"/g, '&quot;')})">
+                                    <div class="font-medium">📦 ${repo.repo_name}</div>
+                                    <div class="text-sm text-gray-600 mt-1">${repo.overview}</div>
+                                </div>
+                            `;
+                        });
+                        html += '</div>';
+                    }
+
+                    // Files section
+                    if (files.length > 0) {
+                        html += '<div><h4 class="text-md font-medium mb-2">Files</h4>';
+
+                        // Group files by repository and folder structure
+                        const filesByRepo = {};
+                        files.forEach(file => {
+                            if (!filesByRepo[file.repo_id]) {
+                                filesByRepo[file.repo_id] = {
+                                    repo_name: file.repo_name,
+                                    folders: {},
+                                    files: []
+                                };
+                            }
+
+                            // Add to appropriate folder
+                            const pathParts = file.file_path.split('/');
+                            if (pathParts.length > 1) {
+                                const folderPath = pathParts.slice(0, -1).join('/');
+                                if (!filesByRepo[file.repo_id].folders[folderPath]) {
+                                    filesByRepo[file.repo_id].folders[folderPath] = [];
+                                }
+                                filesByRepo[file.repo_id].folders[folderPath].push(file);
+                            } else {
+                                filesByRepo[file.repo_id].files.push(file);
+                            }
+                        });
+
+                        // Generate HTML for each repository's files
+                        Object.entries(filesByRepo).forEach(([repoId, repo]) => {
+                            html += `
+                                <div class="mb-4 border-t pt-2">
+                                    <div class="font-medium mb-2">📦 ${repo.repo_name}</div>
+                            `;
+
+                            // Folders
+                            Object.entries(repo.folders).forEach(([folderPath, folderFiles]) => {
+                                const folderId = `folder-${repoId}-${folderPath.replace(/\//g, '-')}`;
+                                const iconId = `folder-icon-${repoId}-${folderPath.replace(/\//g, '-')}`;
+                                html += `
+                                    <div class="ml-4 mb-2">
+                                        <div class="folder-toggle flex items-center gap-2 p-1 rounded"
+                                             onclick="toggleFolder(${repoId}, '${folderPath}')">
+                                            <span id="${iconId}" class="mr-1">📁</span>
+                                            <span class="text-sm text-gray-600 hover:text-gray-900">
+                                                ${folderPath}
+                                            </span>
+                                            <button onclick="selectAllInFolder(${repoId}, '${folderPath}', event)"
+                                                    class="ml-2 text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded border border-blue-600 hover:bg-blue-50">
+                                                Select All
+                                            </button>
+                                        </div>
+                                        <div id="${folderId}" class="folder-content hidden">
+                                            ${folderFiles.map(file => `
+                                                <div id="file-${file.id}"
+                                                     class="p-2 rounded cursor-pointer hover:bg-gray-50 transition-colors flex items-center"
+                                                     onclick="toggleFileSelection(${file.id}, this)">
+                                                    <span class="mr-2">📄</span>
+                                                    <div class="text-sm">${file.file_path.split('/').pop()}</div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `;
+                            });
+
+                            // Root files
+                            repo.files.forEach(file => {
+                                html += `
+                                    <div id="file-${file.id}"
+                                         class="p-2 ml-4 rounded cursor-pointer hover:bg-gray-50 transition-colors flex items-center"
+                                         onclick="toggleFileSelection(${file.id}, this)">
+                                        <span class="mr-2">📄</span>
+                                        <div class="text-sm">${file.file_path}</div>
+                                    </div>
+                                `;
+                            });
+
+                            html += '</div>';
+                        });
+
+                        html += '</div>';
+                    }
+
+                    resultsDiv.innerHTML = html || '<div class="text-gray-500">No results found</div>';
                 } else {
-                    throw new Error(files.error);
+                    throw new Error(results.error);
                 }
             } catch (error) {
                 resultsDiv.innerHTML = `Error: ${error.message}`;
